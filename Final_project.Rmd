@@ -1,0 +1,964 @@
+---
+title: "Heart Attack Risk Prediction. Final Project"
+author: "Giselle Rahimi, Pilar Gore, WonJune Lee, Jiseon Kim, Jiwon Jung, Yoon-hye Cho, Sukyoung
+  Yoon"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(modelr)
+library(broom)
+library(ggmosaic)
+library(boot)
+library(infer)
+library(effsize)
+library(plotly)
+suppressPackageStartupMessages(library(readxl))
+suppressPackageStartupMessages(library(lubridate))
+suppressPackageStartupMessages(library(geosphere))
+suppressPackageStartupMessages(library(lubridate))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(plotrix))
+suppressPackageStartupMessages(library(ggpubr))
+library(rsample)
+
+library(tidymodels)
+load("bootstrap_cohens_d.RData")
+
+
+untidied_dataset <- read_csv("heart_attack_prediction_dataset.csv")
+
+cost <- function(obs, pred) {
+  outcome <- pred > 0.5
+  return(1 - (sum(obs == outcome) / length(obs)))
+}
+
+```
+
+#Tidying (Yoonhye)
+#Removed unwanted columns
+
+```{r}
+untidied_dataset <- untidied_dataset %>%
+select(Age,
+       Sex,
+       Cholesterol,
+       `Blood Pressure`,
+       `Heart Rate`,
+       `Family History`,
+       `Exercise Hours Per Week`,
+       `Stress Level`,
+       `Sleep Hours Per Day`,
+       `Heart Attack Risk`,
+       `Triglycerides`,
+       `Physical Activity Days Per Week`,
+       `Sedentary Hours Per Day`,
+       `Diet`)
+```
+
+#Renamed columns:
+
+```{r}
+untidied_dataset <- untidied_dataset %>%
+  rename(
+    heart_attack_risk = "Heart Attack Risk",
+    blood_pressure = "Blood Pressure",
+    heart_rate = "Heart Rate",
+    family_history = "Family History",
+    exercise_hrs_week = "Exercise Hours Per Week",
+    stress_level = "Stress Level",
+    sedentary_hrs_day = "Sedentary Hours Per Day",
+    physical_days_week = "Physical Activity Days Per Week",
+    sleep_hrs = "Sleep Hours Per Day",
+    age = "Age",
+    sex = "Sex",
+    cholesterol = "Cholesterol",
+    diet = "Diet",
+    triglycerides = "Triglycerides"
+  )
+
+```
+
+#Split original dataset into "no family history" and "family history":
+
+```{r}
+no_family_history_dataset <- 
+  subset(untidied_dataset,
+         family_history == 0)
+```
+
+```{r}
+family_history_dataset <- 
+  subset(
+    untidied_dataset,
+    family_history == 1)
+```
+
+#Separated the blood_pressure column into systolic and diastolic:
+
+```{r}
+no_family_history_dataset <- no_family_history_dataset %>%
+  separate(
+    col = blood_pressure,
+    into = combine("systolic",
+                   "diastolic"),
+    sep = "/",
+    convert = FALSE
+  )
+
+```
+#EDA (Jiwon Jung)
+#boxplot for the exercise hours explanatory variable:
+
+```{r}
+no_family_history_dataset %>%
+ggplot() +
+  geom_boxplot(
+    mapping = aes(
+      x = 
+        factor(heart_attack_risk),
+      y = exercise_hrs_week))+
+  labs(
+    title = "Boxplot of Heart Attack Risk and 
+    Exercise Hours per Week",
+    x = "Heart Attack Risk?",
+    y = "Exercise Hours per Week")
+
+```
+#summary statistics for exercise hours:
+
+```{r}
+no_family_history_dataset %>%
+  group_by(
+    factor(heart_attack_risk)) %>%
+    summarize(
+    median = median(exercise_hrs_week),
+    mean = mean(exercise_hrs_week),
+    max = max(exercise_hrs_week),
+    min = min(exercise_hrs_week)
+  )
+```
+#Boxplot for sleep hours explanatory variable:
+
+```{r}
+no_family_history_dataset %>%
+  ggplot() +
+  geom_boxplot(
+    mapping = aes(
+      x = factor(heart_attack_risk),
+      y = sleep_hrs)) +
+  labs(
+    title = "Boxplot of Heart Attack Risk 
+    and Sleep Hours per Day", 
+    x = "Heart Attack Risk?",
+    y = "Sleep Hours")
+```
+#Summary statistics of sleep hours:
+
+```{r}
+no_family_history_dataset %>%
+  group_by(
+    factor(heart_attack_risk)) %>%
+    summarize(
+    median = median(sleep_hrs),
+    mean = mean(sleep_hrs),
+    max = max(sleep_hrs),
+    min = min(sleep_hrs)
+  )
+```
+#Boxplot of stress level explanatory variable:
+
+```{r}
+no_family_history_dataset %>%
+  ggplot() +
+  geom_boxplot(
+    mapping = aes(
+      x = factor(heart_attack_risk),
+      y = stress_level)) +
+  labs(
+    title = "Boxplot of Heart Attack
+    Risk and Stress Level",
+    x = "Heart Attack Risk",
+    y = "stress level")
+```
+#Summary statistics of stress level explanatory variable:
+
+```{r}
+no_family_history_dataset %>%
+  group_by(
+    factor(heart_attack_risk)) %>%
+    summarize(
+    median = median(stress_level),
+    mean = mean(stress_level),
+    max = max(stress_level),
+    min = min(stress_level)
+  )
+```
+
+#Splitting the stress levels into "not stressed" and "stressed":
+
+```{r}
+no_family_history_dataset <- no_family_history_dataset %>%
+  mutate(
+    count = 
+      ifelse(
+        stress_level >= 1 
+        & !(stress_level >=6) 
+        & heart_attack_risk == 1,
+        "no stress & risk",
+      ifelse(
+        stress_level >= 1
+        & !(stress_level >=6)
+        & heart_attack_risk == 0,
+        "no stress & no risk",
+      ifelse(
+        stress_level >= 6 
+        & heart_attack_risk == 1,
+        "stress & risk",
+      ifelse(
+        stress_level >= 6 
+        & heart_attack_risk == 0,
+        "stress and no risk", NA))))
+  )
+```
+
+#Counted how many people were stressed and at a risk of heart attacks:
+
+```{r}
+no_family_history_dataset %>%
+  group_by(factor(count)) %>%
+  summarize(n = n())
+```
+
+#Bar blot showing distribution of sleep Hours:
+
+```{r}
+no_family_history_dataset$sleep_hrs <- as.numeric(no_family_history_dataset$sleep_hrs)
+
+```
+
+```{r}
+no_family_history_dataset %>%
+  ggplot()+
+  geom_histogram(
+    mapping = aes(x = sleep_hrs,
+                  y = ..density..),
+    bins = 7,
+    fill = "light blue",
+    color = "black")+
+  labs(
+    title = "Distribution of Sleep Hours",
+    x = "Sleep Hours")+
+  facet_wrap(
+    ~heart_attack_risk,
+    scales = "free_x")
+```
+
+#PMF plot showing distribution of Exercise Hours per week:
+
+
+```{r}
+no_family_history_dataset %>%
+  ggplot() +
+  geom_histogram(
+    mapping = aes(
+      x = exercise_hrs_week,
+      y = ..density..),
+    bins = 10, 
+    fill = "light blue",
+    color = "black")+
+  labs(
+    title = 
+      "PMF distribution of Exercise hours per week")+
+  facet_wrap(
+    ~heart_attack_risk,
+    scales = "free_x")
+```
+#Histogram showing distribution of stress level:
+
+```{r}
+no_family_history_dataset$stress_level <- as.numeric(no_family_history_dataset$stress_level)
+
+```
+
+```{r}
+no_family_history_dataset %>%
+  ggplot() +
+  geom_histogram(
+    mapping = aes(
+      x = stress_level,
+      y = ..density..),
+    bins = 10, 
+    fill = "light blue",
+    color = "black")+
+  labs(
+    title = 
+      "PMF Distribution of Stress Level")+
+  facet_wrap(
+    ~heart_attack_risk,
+    scales = "free_x")
+```
+
+
+#count of people with heart attack risk among those with no family history.
+```{r}
+no_family_history_dataset %>%
+  group_by(factor(heart_attack_risk)) %>%
+  summarize(n = n())
+```
+
+#count of people with heart attack risk among those with family history.
+
+```{r}
+family_history_dataset %>%
+  group_by(
+    factor(heart_attack_risk)) %>%
+  summarize(n = n())
+```
+
+#Barplot showing the distribution of people with different combinations of heart attack risk and family history
+#Why is the count messed up!
+
+
+```{r}
+untidied_dataset %>%
+  ggplot()+
+  geom_bar(
+    mapping = aes(
+      x = heart_attack_risk)
+  )+
+  labs(title = "Frequency of Heart Attack Risk")
+
+```
+
+```{r}
+untidied_dataset %>%
+  ggplot()+
+  geom_bar(
+    mapping = aes(
+      x = family_history)
+  )+
+  labs(title = "Frequency of Family History")
+
+```
+#Modeling (Giselle Rahimi)
+#Modeling (exercise_hrs_week)
+
+```{r}
+split <- initial_split(no_family_history_dataset, prop = 0.7)
+trainData <- training(split)
+testData <-testing(split)
+
+```
+
+```{r}
+trainData %>%
+  summarize(
+    total = n(),
+    missing = sum(is.na(heart_attack_risk)),
+    fraction_missing = sum(is.na(heart_attack_risk)/total)
+  )
+
+```
+
+```{r}
+model_1 <-
+  glm(
+  heart_attack_risk ~ exercise_hrs_week,
+  data = trainData,
+  family = binomial()
+)
+
+```
+
+```{r}
+model_1_preds <- 
+  trainData %>%
+  add_predictions(
+    model_1,
+    type = "response"
+  ) %>%
+  mutate(
+    outcome = 
+      if_else(
+        pred >= 0.36,
+                       true = 1,
+                       false = 0))
+```
+
+```{r}
+model_1_preds %>%
+  mutate(
+    correct = if_else(
+      outcome == heart_attack_risk,
+      true = 1,
+      false = 0
+    )
+  ) %>%
+  summarize(
+    total_correct = sum(correct),
+    accuracy = total_correct/n()
+  )
+
+```
+
+```{r}
+logistic_cv1 <- 
+  cv.glm(
+    trainData,
+    model_1, K =5)
+
+```
+
+```{r}
+logistic_cv1$delta
+```
+
+#Modeling (sleep_hrs)
+
+```{r}
+model_2 <- 
+  glm(
+  heart_attack_risk ~ sleep_hrs,
+  data = trainData,
+  family = binomial()
+)
+
+```
+
+```{r}
+model_2_preds <- 
+  trainData %>%
+  add_predictions(
+    model_2,
+    type = "response"
+  ) %>%
+  mutate(
+    outcome = 
+      if_else( 
+        pred >0.36,
+                       true = 1,
+                       false = 0))
+```
+
+```{r}
+model_2_preds %>%
+  mutate(
+    correct = 
+      if_else(
+      outcome == heart_attack_risk,
+      true = 1,
+      false = 0
+    )
+  ) %>%
+  summarize(
+    total_correct = sum(correct),
+    accuracy = total_correct/n()
+  )
+
+```
+
+```{r}
+logistic_cv2 <- 
+  cv.glm(
+    trainData,
+    model_2,
+    K = 5)
+
+```
+
+```{r}
+logistic_cv2$delta
+```
+#Third model:
+
+```{r}
+model_3 <- 
+  glm(
+  heart_attack_risk ~ stress_level,
+  data = trainData,
+  family = binomial()
+)
+
+```
+
+```{r}
+model_3_preds <- 
+  trainData %>%
+  add_predictions(
+    model_3,
+    type = "response"
+  ) %>%
+  mutate(
+    outcome = 
+      if_else( 
+        pred >0.36,
+                       true = 1,
+                       false = 0))
+```
+
+```{r}
+model_3_preds %>%
+  mutate(
+    correct = 
+      if_else(
+      outcome == heart_attack_risk,
+      true = 1,
+      false = 0
+    )
+  ) %>%
+  summarize(
+    total_correct = sum(correct),
+    accuracy = total_correct/n()
+  )
+
+```
+
+```{r}
+
+logistic_cv3 <- 
+  cv.glm(
+    trainData,
+    model_3,
+    K = 5)
+
+```
+
+```{r}
+logistic_cv3$delta
+```
+
+#Fourth model:
+
+```{r}
+model_4 <- 
+  glm(
+  heart_attack_risk ~ exercise_hrs_week + sleep_hrs + stress_level,
+  data = trainData,
+  family = binomial()
+)
+
+```
+
+```{r}
+model_4_preds <- 
+  trainData %>%
+  add_predictions(
+    model_4,
+    type = "response"
+  ) %>%
+  mutate(
+    outcome = 
+      if_else(pred >= 0.36,
+                       true = 1,
+                       false = 0))
+```
+
+```{r}
+model_4_preds %>%
+summarize(
+  min = min(outcome),
+  max = max(outcome)
+)
+
+
+```
+
+```{r}
+model_4_preds %>%
+summarize(
+  min = min(pred)
+)
+
+
+```
+
+```{r}
+model_4_preds %>%
+  arrange(desc(pred))
+```
+
+
+```{r}
+model_4_preds %>%
+  mutate(
+    correct = 
+      if_else(
+      outcome == heart_attack_risk,
+      true = 1,
+      false = 0
+    )
+  ) %>%
+  summarize(
+    total_correct = sum(correct),
+    accuracy = total_correct/n()
+  )
+
+```
+
+```{r}
+
+logistic_cv4 <- 
+  cv.glm(
+    trainData,
+         model_4,
+    K = 5)
+
+```
+
+```{r}
+logistic_cv4$delta
+```
+
+##Model 5: 
+
+```{r}
+model_5 <- 
+  glm(
+  heart_attack_risk ~ stress_level + exercise_hrs_week,
+  data = trainData,
+  family = binomial()
+)
+
+```
+
+```{r}
+model_5_preds <- 
+  trainData %>%
+  add_predictions(
+    model_5,
+    type = "response"
+  ) %>%
+  mutate(
+    outcome = 
+      if_else( 
+        condition = pred >0.36,
+                       true = 1,
+                       false = 0))
+```
+
+```{r}
+model_5_preds %>%
+  mutate(
+    correct = 
+      if_else(
+      condition = heart_attack_risk == outcome,
+      true = 1,
+      false = 0
+    )
+  ) %>%
+  summarize(
+    total_correct = sum(correct),
+    accuracy = total_correct/n()
+  )
+
+```
+
+
+```{r}
+
+logistic_cv5 <- 
+  cv.glm(
+    trainData,
+         model_5,
+    K = 5)
+
+```
+
+```{r}
+logistic_cv5$delta
+```
+## Model 1 has the highest accuracy!
+## Accuracy and cross validation error on test dataset:
+
+```{r}
+model_1_preds_test <- 
+  testData %>%
+  add_predictions(
+    model_1,
+    type = "response"
+  ) %>%
+  mutate(
+    outcome = 
+      if_else(
+        pred >= 0.36,
+                       true = 1,
+                       false = 0))
+```
+
+```{r}
+model_1_preds_test %>%
+  mutate(
+    correct = if_else(
+      outcome == heart_attack_risk,
+      true = 1,
+      false = 0
+    )
+  ) %>%
+  summarize(
+    total_correct = sum(correct),
+    accuracy = total_correct/n()
+  )
+
+```
+
+```{r}
+logistic_cv1_test <- 
+  cv.glm(
+    testData,
+    model_1, K =5)
+
+```
+```{r}
+logistic_cv1_test$delta
+```
+
+
+
+#Hypothesis testing: (Sukyoung Yoon)
+
+#Change the heart_attack_risk variable to a character object.
+
+```{r}
+  no_family_history_dataset$heart_attack_risk <- 
+  as.character(
+    no_family_history_dataset$heart_attack_risk)
+
+```
+#Separated the stress_level variable into two categories (True indicates stress and False indicates no stress)
+ 
+```{r}
+
+no_family_history_dataset <- 
+  no_family_history_dataset %>%
+  mutate(
+    stress =
+      ifelse(
+        stress_level >= 6,
+        "True",
+      ifelse(
+        stress_level >= 1,
+        "False", NA
+  )))
+
+```
+# Changing the stress variable to a character 
+
+```{r}
+  no_family_history_dataset$stress <- 
+  as.character(
+    no_family_history_dataset$stress)
+
+```
+
+```{r}
+str(no_family_history_dataset)
+```
+
+#Test for a difference in proportions (True - False) with stress
+
+```{r}
+heart_null <- no_family_history_dataset %>%
+  specify(
+    heart_attack_risk ~ stress,
+    success = "1") %>%
+  hypothesize(
+    null ="independence") %>%
+  generate(
+    reps = 10000,
+    type = "permute") %>%
+  calculate(
+    stat = "diff in props",
+    order = c("True", "False"))
+
+```
+
+```{r}
+heart_obs_stat <- 
+  no_family_history_dataset %>%
+  specify(
+    heart_attack_risk ~ stress,
+    success = "1") %>%
+  calculate(
+    stat = "diff in props",
+    order = c("True", "False"))
+```
+
+```{r}
+heart_null %>%
+  get_p_value(
+    obs_stat = heart_obs_stat,
+    direction = "both")
+```
+
+```{r}
+heart_null %>%
+  visualize() +
+  shade_p_value(
+    obs_stat = heart_obs_stat,
+    direction = "both") +
+  labs(
+    title = "Difference in proportion of stress level",
+    x = "Difference in proportion of stress level",
+    y = "count")
+```
+
+
+#
+
+
+```{r}
+  no_family_history_dataset <- 
+  no_family_history_dataset %>%
+  mutate(
+    yes_no =
+      ifelse(
+        heart_attack_risk == 0,
+        "yes",
+      ifelse(
+        heart_attack_risk == 1,
+        "no", NA
+  )))
+  
+```
+
+```{r}
+unique(
+  no_family_history_dataset$sleep_hrs)
+```
+
+
+#separating sleep into high and low
+
+```{r}
+no_family_history_dataset <- 
+  no_family_history_dataset %>%
+  mutate(
+    sleep = 
+      ifelse(
+        sleep_hrs >= 7,
+        "High",
+      ifelse(
+        sleep_hrs < 7,
+        "Low", NA
+  )))
+```
+
+
+```{r}
+heart_null2 <- no_family_history_dataset %>%
+  specify(
+    yes_no ~ sleep,
+    success = "yes") %>%
+  hypothesize(
+    null = "independence") %>%
+  generate(
+    reps = 10000,
+    type = "permute") %>%
+  calculate(
+    stat = "diff in props",
+    order=c("High", "Low"))
+```
+
+
+```{r}
+heart_obs_2 <- 
+  no_family_history_dataset %>%
+  specify(
+    yes_no ~ sleep,
+    success = "yes") %>%
+  calculate(
+    stat = "diff in props",
+    order=c("High", "Low"))
+```
+
+
+```{r}
+heart_null2 %>%
+  get_p_value(
+    obs_stat = heart_obs_2,
+    direction = "both")
+```
+```{r}
+heart_null2 %>%
+  visualize() +
+  shade_p_value(
+    obs_stat = 
+      heart_obs_2,
+    direction = "both") +
+  labs(
+    title = "Difference in proportion of sleep level",
+    x = "Difference in proportion of sleep level",
+    y = "count")
+```
+
+#Hypothesis test difference in proprotions for exercise_hrs:
+
+#Separating exercise hours into high and low categories.
+
+```{r}
+
+no_family_history_dataset <- no_family_history_dataset %>%
+  mutate(
+    exercise =
+      ifelse(
+        exercise_hrs_week >= 10,
+        "High",
+      ifelse(exercise_hrs_week < 10,
+             "Low", NA
+  )))
+
+```
+
+```{r}
+heart_null3 <- 
+  no_family_history_dataset %>%
+  specify(
+    yes_no ~ exercise,
+    success = "yes") %>%
+  hypothesize(
+    null = "independence") %>%
+  generate(
+    reps = 10000,
+    type = "permute") %>%
+  calculate(
+    stat = "diff in props",
+    order=c("High", "Low"))
+```
+
+
+```{r}
+heart_obs_3 <- 
+  no_family_history_dataset %>%
+  specify(
+    yes_no ~ exercise,
+    success = "yes") %>%
+  calculate(
+    stat = "diff in props",
+    order=c("High", "Low"))
+```
+
+
+```{r}
+heart_null3 %>%
+  get_p_value(
+    obs_stat = heart_obs_3,
+    direction = "both")
+```
+```{r}
+heart_null3 %>%
+  visualize() +
+  shade_p_value(
+    obs_stat = heart_obs_3,
+    direction = "both") +
+  labs(
+    title = "Difference in proportion of 
+    exercise hour category", 
+    x = "Difference in proportion
+    of exercise hour category",
+    y = "count")
+```
